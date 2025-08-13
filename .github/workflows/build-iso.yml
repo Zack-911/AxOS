@@ -1,0 +1,85 @@
+name: Build AxOS ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  build-iso:
+    name: Build ISO (Arch container on Ubuntu runner)
+    runs-on: ubuntu-latest
+
+    # Build inside an Arch Linux container so we can use archiso/mkarchiso
+    container:
+      image: archlinux:latest
+      options: --privileged
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # (Optional) Cache pacman packages to speed up repeat builds
+      - name: Cache pacman pkg cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ runner.os }}-${{ hashFiles('**/pacman.conf') }}
+          restore-keys: |
+            pacman-${{ runner.os }}-
+
+      - name: Prepare Arch environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Make pacman non-interactive, faster mirrors, and parallel downloads
+          sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf
+          pacman -Syyu --noconfirm --needed
+          pacman -S --noconfirm --needed archlinux-keyring
+          pacman-key --init || true
+          pacman-key --populate archlinux || true
+          pacman -S --noconfirm --needed archiso git base-devel squashfs-tools
+
+      # If the repo includes a helper script (it does), use it. Otherwise fallback to mkarchiso.
+      - name: Build ISO
+        id: build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x ./build.sh || true
+          if [ -x ./build.sh ]; then
+            ./build.sh
+            # Try to detect output ISO
+            ISO_PATH="$(find . -maxdepth 3 -type f -name '*.iso' | head -n1 || true)"
+            echo "iso_path=${ISO_PATH}" >> "$GITHUB_OUTPUT"
+          else
+            # Fallback generic build with mkarchiso, assuming 'axos-iso' profile dir
+            workdir="$(pwd)/work"
+            outdir="$(pwd)/out"
+            mkdir -p "$workdir" "$outdir"
+            mkarchiso -v -w "$workdir" -o "$outdir" ./axos-iso
+            ISO_PATH="$(find "$outdir" -type f -name '*.iso' | head -n1)"
+            echo "iso_path=${ISO_PATH}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show ISO info
+        if: steps.build.outputs.iso_path != ''
+        run: |
+          ls -lh "${{ steps.build.outputs.iso_path }}"
+          sha256sum "${{ steps.build.outputs.iso_path }}" | tee iso.sha256
+
+      - name: Upload ISO artifact
+        if: steps.build.outputs.iso_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: axos-iso
+          path: |
+            ${{ steps.build.outputs.iso_path }}
+            iso.sha256
+          if-no-files-found: error
