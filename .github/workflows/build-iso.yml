@@ -53,7 +53,9 @@ jobs:
           pacman -S --noconfirm --needed archlinux-keyring
           pacman-key --init || true
           pacman-key --populate archlinux || true
-          pacman -S --noconfirm --needed archiso git base-devel squashfs-tools
+          # NOTE: add grub + efibootmgr for GRUB-based EFI validation/builds
+          pacman -S --noconfirm --needed archiso git base-devel squashfs-tools grub efibootmgr dosfstools mtools
+
 
       - name: Build ISO (via build.sh)
         id: build
